@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VALS Browser - Virtual Analog Logic System</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 5px rgba(0, 255, 255, 0.5); }
+            50% { box-shadow: 0 0 20px rgba(0, 255, 255, 0.9); }
+        }
+        @keyframes flow-particle {
+            0% { opacity: 0; transform: translateX(0); }
+            50% { opacity: 1; }
+            100% { opacity: 0; transform: translateX(100%); }
+        }
+        .analog-cell {
+            transition: all 0.3s ease;
+        }
+        .analog-cell.active {
+            animation: pulse-glow 1s infinite;
+        }
+        .flow-particle {
+            animation: flow-particle 0.5s linear infinite;
+        }
+        body {
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+            min-height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useMemo } = React;
+
+        // ============================================
+        // SHANNON ENCRYPTION LIBRARY (Browser Version)
+        // ============================================
+        
+        /**
+         * Utility function to generate cryptographically secure random bytes.
+         * @param {number} numBytes - The number of random bytes to generate.
+         * @returns {Uint8Array} - Array containing the random bytes.
+         */
+        function generateRandomBytes(numBytes) {
+            if (typeof window !== 'undefined' && typeof window.crypto !== 'undefined' && typeof window.crypto.getRandomValues === 'function') {
+                const array = new Uint8Array(numBytes);
+                window.crypto.getRandomValues(array);
+                return array;
+            } else {
+                throw new Error('No secure random number generator available.');
+            }
+        }
+
+        /**
+         * Calculates Shannon entropy of a Uint8Array.
+         * @param {Uint8Array} buffer - The buffer to analyze.
+         * @returns {number} - The Shannon entropy in bits per byte.
+         */
+        function shannonEntropy(buffer) {
+            const frequencyMap = {};
+            for (const byte of buffer) {
+                frequencyMap[byte] = (frequencyMap[byte] || 0) + 1;
+            }
+
+            let entropy = 0;
+            const bufferLength = buffer.length;
+            for (const frequency of Object.values(frequencyMap)) {
+                const probability = frequency / bufferLength;
+                entropy -= probability * Math.log2(probability);
+            }
+            return entropy;
+        }
+
+        /**
+         * Inverts a buffer to create a waveform for mixing.
+         * @param {Uint8Array} buffer - The buffer to invert.
+         * @returns {Uint8Array} - A new buffer containing the inverted waveform.
+         */
+        function invertBuffer(buffer) {
+            const invertedBuffer = new Uint8Array(buffer.length);
+            for (let i = 0; i < buffer.length; i++) {
+                invertedBuffer[i] = 255 - buffer[i];
+            }
+            return invertedBuffer;
+        }
+
+        /**
+         * Simple SHA-256 hash implementation using Web Crypto API
+         */
+        async function sha256(data) {
+            const msgBuffer = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+            const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer);
+            return new Uint8Array(hashBuffer);
+        }
+
+        /**
+         * ShannonEncryption class for browser environment
+         */
+        class ShannonEncryption {
+            constructor(options, seed) {
+                this.options = options;
+                this.entropySeed = seed || generateRandomBytes(options.entropyBytes);
+            }
+
+            async hashKey(key) {
+                const keyData = typeof key === 'string' ? new TextEncoder().encode(key) : key;
+                return await sha256(keyData);
+            }
+
+            async deriveKey(level, key) {
+                const levelBuffer = new Uint8Array([level]);
+                const combinedInput = new Uint8Array(this.entropySeed.length + levelBuffer.length);
+                combinedInput.set(this.entropySeed, 0);
+                combinedInput.set(levelBuffer, this.entropySeed.length);
+                
+                const keyHash = await this.hashKey(key);
+                const finalInput = new Uint8Array(combinedInput.length + keyHash.length);
+                finalInput.set(combinedInput, 0);
+                finalInput.set(keyHash, combinedInput.length);
+                
+                return await sha256(finalInput);
+            }
+
+            async generateLevelEntropy(level, key) {
+                let currentKey = await this.deriveKey(level, key);
+                const outputBuffer = new Uint8Array(this.options.outputBytes);
+                let offset = 0;
+
+                while (offset < this.options.outputBytes) {
+                    const digest = await sha256(currentKey);
+                    const bytesToCopy = Math.min(digest.length, this.options.outputBytes - offset);
+                    outputBuffer.set(digest.slice(0, bytesToCopy), offset);
+                    offset += bytesToCopy;
+                    currentKey = digest;
+                }
+                return outputBuffer;
+            }
+
+            async process(data, key, decrypt = false) {
+                let currentBuffer = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
+                let combinedEntropy = new Uint8Array(this.options.outputBytes);
+
+                for (let level = 0; level < this.options.shannonLevels; level++) {
+                    const levelEntropy = await this.generateLevelEntropy(level, key);
+                    
+                    if (level === 0) {
+                        combinedEntropy = new Uint8Array(levelEntropy);
+                    } else if (level === 1) {
+                        const invertedEntropy = invertBuffer(levelEntropy);
+                        for (let i = 0; i < combinedEntropy.length; i++) {
+                            combinedEntropy[i] = (combinedEntropy[i] - invertedEntropy[i] + 256) % 256;
+                        }
+                    } else {
+                        for (let i = 0; i < combinedEntropy.length; i++) {
+                            combinedEntropy[i] = (combinedEntropy[i] + levelEntropy[i]) % 256;
+                        }
+                    }
+                }
+
+                const result = new Uint8Array(currentBuffer.length);
+                for (let i = 0; i < currentBuffer.length; i++) {
+                    result[i] = currentBuffer[i] ^ combinedEntropy[i % combinedEntropy.length];
+                }
+
+                return result;
+            }
+
+            async encrypt(data, key) {
+                return await this.process(data, key, false);
+            }
+
+            async decrypt(data, key) {
+                return await this.process(data, key, true);
+            }
+
+            analyzeEntropy(data, encryptedData) {
+                const originalEntropy = shannonEntropy(data);
+                const encryptedEntropy = shannonEntropy(encryptedData);
+                return { originalEntropy, encryptedEntropy };
+            }
+        }
+
+        /**
+         * UnbreakableCryptoMethod class for security validation
+         */
+        class UnbreakableCryptoMethod {
+            constructor() {
+                this.UNBREAKABLE_THRESHOLD = 1.0e+35;
+            }
+
+            checkUnbreakableStatus(params) {
+                const systemStateFactor = (params.systemStateIndex * params.systemDecayFactor) / Math.sqrt(params.systemStateIndex);
+                const latencyVarianceConsensus = (params.processingLatency * params.stateVariance) !== 0 
+                    ? 1.0 / (params.processingLatency * params.stateVariance) 
+                    : 0;
+                const computationalInversionComplexity = params.computationalComplexity;
+                const combinedMetric = systemStateFactor * latencyVarianceConsensus * computationalInversionComplexity;
+                const isUnbreakable = combinedMetric > this.UNBREAKABLE_THRESHOLD;
+
+                let statusMessage;
+                if (isUnbreakable) {
+                    statusMessage = `UNBREAKABLE: Combined metric of ${combinedMetric.toExponential(2)} exceeds threshold.`;
+                } else {
+                    statusMessage = `VULNERABLE: Combined metric of ${combinedMetric.toExponential(2)} below threshold.`;
+                }
+
+                return {
+                    combinedMetric,
+                    isUnbreakable,
+                    statusMessage,
+                };
+            }
+        }
+
+        // ============================================
+        // VALS INTEGRATION LAYER
+        // ============================================
+        const VALS_Controller = () => {
+            const [targetVector, setTargetVector] = useState({ x: 0, y: 0, z: 0 });
+            const [activeRoutes, setActiveRoutes] = useState([]);
+            const [conductanceMatrix, setConductanceMatrix] = useState([]);
+            const [systemMetrics, setSystemMetrics] = useState({
+                thermalLoad: 0,
+                currentFlow: 0,
+                stabilityIndex: 100
+            });
+            
+            // Encryption state
+            const [encryptionKey, setEncryptionKey] = useState('VALS_Secure_Key_2024');
+            const [shannonCipher, setShannonCipher] = useState(null);
+            const [lastEncrypted, setLastEncrypted] = useState(null);
+            const [entropyAnalysis, setEntropyAnalysis] = useState(null);
+            const [securityStatus, setSecurityStatus] = useState(null);
+
+            // Initialize Shannon Encryption on mount
+            useEffect(() => {
+                const cipher = new ShannonEncryption({
+                    shannonLevels: 4,
+                    entropyBytes: 32,
+                    outputBytes: 256
+                });
+                setShannonCipher(cipher);
+            }, []);
+
+            // Update security status when encryption occurs
+            useEffect(() => {
+                if (entropyAnalysis && shannonCipher) {
+                    const unbreakableMethod = new UnbreakableCryptoMethod();
+                    const params = {
+                        systemStateIndex: 4,
+                        systemDecayFactor: 1 - (1 / 32),
+                        processingLatency: 40,
+                        stateVariance: entropyAnalysis.encryptedEntropy,
+                        computationalComplexity: 1e3 * 32 * 256
+                    };
+                    const result = unbreakableMethod.checkUnbreakableStatus(params);
+                    setSecurityStatus(result);
+                }
+            }, [entropyAnalysis, shannonCipher]);
+
+            // The Code-to-Wire Route Compiler (CRWC)
+            const compileCodeToAWRT = useCallback((command) => {
+                const routeTable = {
+                    'top': { cells: ['A1-B2', 'B2-C3'], primitive: 'Summation' },
+                    'physics': { cells: ['D1-D4'], primitive: 'Integrator' },
+                    'reboot': { cells: 'ALL_RESET', primitive: 'Global_Bias' },
+                    'navigate': { cells: ['E1-F2', 'F2-G3'], primitive: 'Differential_Pair' },
+                    'render': { cells: ['H1-H4', 'I1-I4'], primitive: 'Capacitive_Storage' },
+                    'secure': { cells: ['J1-K2', 'K2-L3', 'L3-M4'], primitive: 'Memristive_Loop' }
+                };
+                
+                const mapping = routeTable[command] || routeTable['top'];
+                setActiveRoutes(mapping.cells);
+                onHardwareRemap(mapping);
+                return mapping;
+            }, []);
+
+            const onHardwareRemap = useCallback((mapping) => {
+                console.log(`Physically reconfiguring RAF nodes: ${mapping.cells}`);
+                // Simulate programming pulses
+                const newMatrix = generateConductanceMatrix(mapping.cells);
+                setConductanceMatrix(newMatrix);
+                
+                // Update metrics based on remapping
+                setSystemMetrics(prev => ({
+                    thermalLoad: Math.min(100, prev.thermalLoad + Math.random() * 10),
+                    currentFlow: Math.random() * 100,
+                    stabilityIndex: Math.max(0, 100 - Math.random() * 5)
+                }));
+            }, []);
+
+            const generateConductanceMatrix = (cells) => {
+                const matrix = [];
+                for (let i = 0; i < 8; i++) {
+                    const row = [];
+                    for (let j = 0; j < 8; j++) {
+                        const cellId = `${String.fromCharCode(65 + i)}${j + 1}`;
+                        const isActive = cells.some(c => c.includes(cellId));
+                        row.push({
+                            id: cellId,
+                            conductance: isActive ? 0.95 : 0.1 + Math.random() * 0.2,
+                            active: isActive
+                        });
+                    }
+                    matrix.push(row);
+                }
+                return matrix;
+            };
+
+            // Encrypt data handler
+            const handleEncrypt = async (plainText) => {
+                if (!shannonCipher) return null;
+                try {
+                    const encrypted = await shannonCipher.encrypt(plainText, encryptionKey);
+                    const originalData = new TextEncoder().encode(plainText);
+                    const analysis = shannonCipher.analyzeEntropy(originalData, encrypted);
+                    setEntropyAnalysis(analysis);
+                    setLastEncrypted(encrypted);
+                    return { encrypted, analysis };
+                } catch (error) {
+                    console.error('Encryption failed:', error);
+                    return null;
+                }
+            };
+
+            // Decrypt data handler
+            const handleDecrypt = async (encryptedData) => {
+                if (!shannonCipher || !encryptedData) return null;
+                try {
+                    const decrypted = await shannonCipher.decrypt(encryptedData, encryptionKey);
+                    return new TextDecoder().decode(decrypted);
+                } catch (error) {
+                    console.error('Decryption failed:', error);
+                    return null;
+                }
+            };
+
+            return (
+                <div className="flex flex-col lg:flex-row gap-4 bg-black/80 p-6 rounded-xl border border-cyan-900/50">
+                    <AnalyzerPanel 
+                        onUniverseTargetChange={(v) => setTargetVector(v)}
+                        targetVector={targetVector}
+                    />
+                    <VirtualCPUSystem 
+                        currentUniverseId={targetVector} 
+                        onCommand={compileCodeToAWRT}
+                        onEncrypt={handleEncrypt}
+                        onDecrypt={handleDecrypt}
+                        encryptionKey={encryptionKey}
+                        onKeyChange={setEncryptionKey}
+                        lastEncrypted={lastEncrypted}
+                        entropyAnalysis={entropyAnalysis}
+                        securityStatus={securityStatus}
+                    />
+                    <ReconfigurableAnalogFabric 
+                        conductanceMatrix={conductanceMatrix}
+                        activeRoutes={activeRoutes}
+                        metrics={systemMetrics}
+                        securityStatus={securityStatus}
+                    />
+                </div>
+            );
+        };
+
+        // Analyzer Panel - Monitors Reality Level
+        const AnalyzerPanel = ({ onUniverseTargetChange, targetVector }) => {
+            const [realityLevel, setRealityLevel] = useState(1.0);
+            const [deltaZ, setDeltaZ] = useState(0);
+
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    const newZ = targetVector.z + (Math.random() - 0.5) * 0.1;
+                    const delta = newZ - targetVector.z;
+                    setDeltaZ(delta);
+                    onUniverseTargetChange({ ...targetVector, z: newZ });
+                    
+                    if (Math.abs(delta) > 0.05) {
+                        // Trigger thermal-analog re-bias
+                        console.log(`Thermal-Analog Re-bias triggered: ΔZ = ${delta.toFixed(3)}`);
+                    }
+                }, 1000);
+                return () => clearInterval(interval);
+            }, [targetVector, onUniverseTargetChange]);
+
+            return (
+                <div className="bg-gray-900/80 p-4 rounded-lg border border-cyan-700/30 min-w-[250px]">
+                    <h3 className="text-cyan-400 font-bold mb-3 flex items-center gap-2">
+                        <span className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></span>
+                        AnalyzerPanel
+                    </h3>
+                    <div className="space-y-3 text-sm">
+                        <div className="flex justify-between">
+                            <span className="text-gray-400">Reality Level (Vz):</span>
+                            <span className="text-cyan-300 font-mono">{realityLevel.toFixed(3)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-gray-400">ΔZ Delta:</span>
+                            <span className={`font-mono ${Math.abs(deltaZ) > 0.05 ? 'text-red-400' : 'text-green-400'}`}>
+                                {deltaZ.toFixed(4)}
+                            </span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-gray-400">Target Vector:</span>
+                            <span className="text-purple-300 font-mono text-xs">
+                                [{targetVector.x.toFixed(2)}, {targetVector.y.toFixed(2)}, {targetVector.z.toFixed(2)}]
+                            </span>
+                        </div>
+                        <div className="pt-2 border-t border-gray-700">
+                            <div className="text-gray-400 text-xs mb-1">Signal Stability</div>
+                            <div className="w-full bg-gray-700 rounded-full h-2">
+                                <div 
+                                    className="bg-gradient-to-r from-cyan-500 to-purple-500 h-2 rounded-full transition-all duration-500"
+                                    style={{ width: `${100 - Math.abs(deltaZ) * 100}%` }}
+                                ></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Virtual CPU System - Issues Logic Commands with Encryption
+        const VirtualCPUSystem = ({ currentUniverseId, onCommand, onEncrypt, onDecrypt, encryptionKey, onKeyChange, lastEncrypted, entropyAnalysis, securityStatus }) => {
+            const [terminalInput, setTerminalInput] = useState('');
+            const [commandHistory, setCommandHistory] = useState([]);
+            const [lastPrimitive, setLastPrimitive] = useState(null);
+            const [encryptInput, setEncryptInput] = useState('');
+            const [decryptResult, setDecryptResult] = useState('');
+            const [isProcessing, setIsProcessing] = useState(false);
+
+            const executeCommand = (cmd) => {
+                const result = onCommand(cmd);
+                setLastPrimitive(result.primitive);
+                setCommandHistory(prev => [...prev.slice(-9), { cmd, time: new Date().toLocaleTimeString(), primitive: result.primitive }]);
+            };
+
+            const handleKeyDown = (e) => {
+                if (e.key === 'Enter' && terminalInput.trim()) {
+                    executeCommand(terminalInput.trim().toLowerCase());
+                    setTerminalInput('');
+                }
+            };
+
+            const handleEncryptSubmit = async () => {
+                if (!encryptInput.trim() || !onEncrypt) return;
+                setIsProcessing(true);
+                const result = await onEncrypt(encryptInput);
+                if (result) {
+                    setCommandHistory(prev => [...prev.slice(-9), { 
+                        cmd: `encrypt: "${encryptInput.substring(0, 20)}..."`, 
+                        time: new Date().toLocaleTimeString(), 
+                        primitive: 'Shannon_Encryption' 
+                    }]);
+                }
+                setIsProcessing(false);
+            };
+
+            const handleDecryptSubmit = async () => {
+                if (!lastEncrypted || !onDecrypt) return;
+                setIsProcessing(true);
+                const result = await onDecrypt(lastEncrypted);
+                if (result) {
+                    setDecryptResult(result);
+                    setCommandHistory(prev => [...prev.slice(-9), { 
+                        cmd: `decrypt: ${lastEncrypted.length} bytes`, 
+                        time: new Date().toLocaleTimeString(), 
+                        primitive: 'Shannon_Decryption' 
+                    }]);
+                }
+                setIsProcessing(false);
+            };
+
+            const quickCommands = ['navigate', 'render', 'secure', 'physics', 'top', 'reboot'];
+
+            // Convert Uint8Array to hex string for display
+            const arrayToHex = (arr) => {
+                if (!arr) return '';
+                return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+            };
+
+            return (
+                <div className="bg-gray-900/80 p-4 rounded-lg border border-purple-700/30 min-w-[350px]">
+                    <h3 className="text-purple-400 font-bold mb-3 flex items-center gap-2">
+                        <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></span>
+                        VirtualCPUSystem + Encryption
+                    </h3>
+                    
+                    {/* Encryption Key Input */}
+                    <div className="mb-3">
+                        <label className="text-xs text-gray-400 mb-1 block">Encryption Key</label>
+                        <input
+                            type="text"
+                            value={encryptionKey}
+                            onChange={(e) => onKeyChange(e.target.value)}
+                            className="w-full bg-black/50 border border-gray-700 rounded px-2 py-1 text-sm text-cyan-300 font-mono"
+                            placeholder="Enter encryption key..."
+                        />
+                    </div>
+
+                    {/* Terminal Input */}
+                    <div className="mb-3">
+                        <div className="bg-black/50 rounded border border-gray-700 p-2 font-mono text-sm">
+                            <span className="text-green-400">vals@browser</span>
+                            <span className="text-gray-500">:</span>
+                            <span className="text-blue-400">~</span>
+                            <span className="text-gray-500">$ </span>
+                            <input
+                                type="text"
+                                value={terminalInput}
+                                onChange={(e) => setTerminalInput(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                className="bg-transparent outline-none text-white w-full"
+                                placeholder="Enter command..."
+                            />
+                        </div>
+                    </div>
+
+                    {/* Quick Commands */}
+                    <div className="flex flex-wrap gap-1 mb-3">
+                        {quickCommands.map(cmd => (
+                            <button
+                                key={cmd}
+                                onClick={() => executeCommand(cmd)}
+                                className="px-2 py-1 bg-purple-900/30 hover:bg-purple-700/50 border border-purple-700/50 rounded text-xs text-purple-300 transition-all"
+                            >
+                                {cmd}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Encryption Panel */}
+                    <div className="mb-3 p-3 bg-green-900/20 border border-green-700/30 rounded">
+                        <h4 className="text-green-400 text-xs font-bold mb-2">🔐 Shannon Encryption</h4>
+                        <textarea
+                            value={encryptInput}
+                            onChange={(e) => setEncryptInput(e.target.value)}
+                            className="w-full bg-black/50 border border-gray-700 rounded px-2 py-1 text-sm text-white mb-2 font-mono"
+                            placeholder="Enter text to encrypt..."
+                            rows={2}
+                        />
+                        <button
+                            onClick={handleEncryptSubmit}
+                            disabled={isProcessing || !encryptInput.trim()}
+                            className="w-full px-3 py-1.5 bg-green-700/50 hover:bg-green-600/50 disabled:bg-gray-700 disabled:cursor-not-allowed border border-green-600/50 rounded text-xs text-green-300 transition-all"
+                        >
+                            {isProcessing ? 'Processing...' : 'Encrypt Data'}
+                        </button>
+                        
+                        {/* Encrypted Output Display */}
+                        {lastEncrypted && (
+                            <div className="mt-2 p-2 bg-black/50 rounded border border-green-700/30">
+                                <div className="text-xs text-gray-400 mb-1">Encrypted (hex):</div>
+                                <div className="text-green-300 font-mono text-xs break-all max-h-20 overflow-y-auto">
+                                    {arrayToHex(lastEncrypted)}
+                                </div>
+                                {entropyAnalysis && (
+                                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                                        <div>
+                                            <span className="text-gray-500">Original Entropy:</span>
+                                            <span className="text-cyan-300 ml-1">{entropyAnalysis.originalEntropy.toFixed(3)} bits</span>
+                                        </div>
+                                        <div>
+                                            <span className="text-gray-500">Encrypted Entropy:</span>
+                                            <span className="text-cyan-300 ml-1">{entropyAnalysis.encryptedEntropy.toFixed(3)} bits</span>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        
+                        {/* Decrypt Button */}
+                        {lastEncrypted && (
+                            <button
+                                onClick={handleDecryptSubmit}
+                                disabled={isProcessing}
+                                className="w-full mt-2 px-3 py-1.5 bg-blue-700/50 hover:bg-blue-600/50 disabled:bg-gray-700 disabled:cursor-not-allowed border border-blue-600/50 rounded text-xs text-blue-300 transition-all"
+                            >
+                                {isProcessing ? 'Processing...' : 'Decrypt Last Message'}
+                            </button>
+                        )}
+                        
+                        {/* Decrypted Result */}
+                        {decryptResult && (
+                            <div className="mt-2 p-2 bg-blue-900/20 rounded border border-blue-700/30">
+                                <div className="text-xs text-gray-400 mb-1">Decrypted:</div>
+                                <div className="text-blue-300 font-mono text-sm">{decryptResult}</div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Security Status */}
+                    {securityStatus && (
+                        <div className={`mb-3 p-2 rounded border ${securityStatus.isUnbreakable ? 'bg-green-900/20 border-green-700/50' : 'bg-red-900/20 border-red-700/50'}`}>
+                            <div className={`text-xs font-bold ${securityStatus.isUnbreakable ? 'text-green-400' : 'text-red-400'}`}>
+                                {securityStatus.isUnbreakable ? '✓ SECURE' : '⚠ VULNERABLE'}
+                            </div>
+                            <div className="text-xs text-gray-400 mt-1 font-mono">
+                                Metric: {securityStatus.combinedMetric.toExponential(2)}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Command History */}
+                    <div className="bg-black/30 rounded p-2 max-h-[150px] overflow-y-auto">
+                        <div className="text-gray-500 text-xs mb-2">COMMAND LOG</div>
+                        {commandHistory.map((entry, idx) => (
+                            <div key={idx} className="text-xs font-mono py-1 border-b border-gray-800 last:border-0">
+                                <span className="text-gray-500">[{entry.time}]</span>
+                                <span className="text-green-400 ml-2">{entry.cmd}</span>
+                                <span className="text-purple-400 ml-2">→ {entry.primitive}</span>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Current Primitive Display */}
+                    {lastPrimitive && (
+                        <div className="mt-3 p-2 bg-purple-900/20 border border-purple-700/30 rounded">
+                            <div className="text-xs text-gray-400">Active Analog Primitive</div>
+                            <div className="text-purple-300 font-mono text-sm">{lastPrimitive.replace(/_/g, ' ')}</div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // 3D Reconfigurable Analog Fabric Visualization with Security Status
+        const ReconfigurableAnalogFabric = ({ conductanceMatrix, activeRoutes, metrics, securityStatus }) => {
+            return (
+                <div className="bg-gray-900/80 p-4 rounded-lg border border-green-700/30 flex-1">
+                    <h3 className="text-green-400 font-bold mb-3 flex items-center gap-2">
+                        <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                        Reconfigurable Analog Fabric (RAF) + Security
+                    </h3>
+                    
+                    {/* Security Status Indicator */}
+                    {securityStatus && (
+                        <div className={`mb-4 p-3 rounded-lg border ${securityStatus.isUnbreakable ? 'bg-green-900/30 border-green-500/50' : 'bg-red-900/30 border-red-500/50'}`}>
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className={`text-sm font-bold ${securityStatus.isUnbreakable ? 'text-green-400' : 'text-red-400'}`}>
+                                        {securityStatus.isUnbreakable ? '🔒 ENCRYPTION ACTIVE - UNBREAKABLE' : '⚠️ SECURITY WARNING'}
+                                    </div>
+                                    <div className="text-xs text-gray-400 mt-1 font-mono">
+                                        Combined Metric: {securityStatus.combinedMetric.toExponential(2)}
+                                    </div>
+                                </div>
+                                <div className={`text-3xl ${securityStatus.isUnbreakable ? 'animate-pulse' : ''}`}>
+                                    {securityStatus.isUnbreakable ? '🛡️' : '⚠️'}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* Material Stack Layers */}
+                    <div className="grid grid-cols-4 gap-2 mb-4 text-xs">
+                        <div className="bg-gradient-to-t from-gray-800 to-gray-700 p-2 rounded text-center border border-gray-600">
+                            <div className="text-gray-400">Layer 4</div>
+                            <div className="text-cyan-300">Interconnect (TSVs)</div>
+                        </div>
+                        <div className="bg-gradient-to-t from-blue-900 to-blue-800 p-2 rounded text-center border border-blue-600">
+                            <div className="text-gray-400">Layer 3</div>
+                            <div className="text-blue-300">TiO₂ Memristors</div>
+                        </div>
+                        <div className="bg-gradient-to-t from-yellow-900 to-yellow-800 p-2 rounded text-center border border-yellow-600">
+                            <div className="text-gray-400">Layer 2</div>
+                            <div className="text-yellow-300">GaN Transistors</div>
+                        </div>
+                        <div className="bg-gradient-to-t from-purple-900 to-purple-800 p-2 rounded text-center border border-purple-600">
+                            <div className="text-gray-400">Layer 1</div>
+                            <div className="text-purple-300">Diamond Substrate</div>
+                        </div>
+                    </div>
+
+                    {/* Conductance Matrix Grid */}
+                    <div className="grid grid-cols-8 gap-1 mb-4">
+                        {conductanceMatrix.length > 0 ? conductanceMatrix.flat().map((cell, idx) => (
+                            <div
+                                key={cell.id}
+                                className={`analog-cell aspect-square rounded flex items-center justify-center text-xs font-mono cursor-pointer
+                                    ${cell.active 
+                                        ? 'bg-cyan-500/30 border border-cyan-400 text-cyan-200' 
+                                        : 'bg-gray-800/50 border border-gray-700 text-gray-500'}`}
+                                title={`${cell.id}: G=${cell.conductance.toFixed(3)}`}
+                            >
+                                {cell.active && <span className="w-1 h-1 bg-cyan-400 rounded-full"></span>}
+                            </div>
+                        )) : (
+                            Array(64).fill(0).map((_, idx) => (
+                                <div key={idx} className="aspect-square rounded bg-gray-800/30 border border-gray-700/50"></div>
+                            ))
+                        )}
+                    </div>
+
+                    {/* Active Routes */}
+                    {activeRoutes.length > 0 && (
+                        <div className="mb-3">
+                            <div className="text-gray-400 text-xs mb-1">Active Signal Paths</div>
+                            <div className="flex flex-wrap gap-1">
+                                {activeRoutes.map((route, idx) => (
+                                    <span key={idx} className="px-2 py-1 bg-cyan-900/30 border border-cyan-700/50 rounded text-xs text-cyan-300 font-mono">
+                                        {route}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* System Metrics */}
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                        <div className="bg-red-900/20 p-2 rounded border border-red-700/30">
+                            <div className="text-gray-400">Thermal Load</div>
+                            <div className="text-red-300 font-mono">{metrics.thermalLoad.toFixed(1)}°C</div>
+                            <div className="w-full bg-gray-700 rounded-full h-1 mt-1">
+                                <div className="bg-red-500 h-1 rounded-full transition-all" style={{ width: `${metrics.thermalLoad}%` }}></div>
+                            </div>
+                        </div>
+                        <div className="bg-blue-900/20 p-2 rounded border border-blue-700/30">
+                            <div className="text-gray-400">Current Flow</div>
+                            <div className="text-blue-300 font-mono">{metrics.currentFlow.toFixed(1)} mA</div>
+                            <div className="w-full bg-gray-700 rounded-full h-1 mt-1">
+                                <div className="bg-blue-500 h-1 rounded-full transition-all" style={{ width: `${metrics.currentFlow}%` }}></div>
+                            </div>
+                        </div>
+                        <div className="bg-green-900/20 p-2 rounded border border-green-700/30">
+                            <div className="text-gray-400">Stability Index</div>
+                            <div className="text-green-300 font-mono">{metrics.stabilityIndex.toFixed(1)}%</div>
+                            <div className="w-full bg-gray-700 rounded-full h-1 mt-1">
+                                <div className="bg-green-500 h-1 rounded-full transition-all" style={{ width: `${metrics.stabilityIndex}%` }}></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Main App Component
+        const App = () => {
+            return (
+                <div className="min-h-screen p-8">
+                    <header className="mb-6">
+                        <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-purple-400 to-pink-400 mb-2">
+                            VALS Browser
+                        </h1>
+                        <p className="text-gray-400">Virtual Analog Logic System - Ultra-Fast Secure Computing</p>
+                    </header>
+
+                    <VALS_Controller />
+
+                    {/* Security Features Panel */}
+                    <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <SecurityFeature 
+                            icon="🔐"
+                            title="Memristive Encryption"
+                            description="Dynamic conductance states create unclonable physical keys"
+                        />
+                        <SecurityFeature 
+                            icon="⚡"
+                            title="Analog Processing"
+                            description="Zero-clock computation through continuous current flow"
+                        />
+                        <SecurityFeature 
+                            icon="🔄"
+                            title="Self-Reconfiguring"
+                            description="Hardware topology adapts in real-time to threats"
+                        />
+                    </div>
+
+                    {/* Mathematical Foundation */}
+                    <div className="mt-6 bg-gray-900/50 p-4 rounded-lg border border-gray-700">
+                        <h3 className="text-cyan-400 font-bold mb-2">Conductance Identity Matrix</h3>
+                        <div className="font-mono text-sm text-gray-300 overflow-x-auto">
+                            <pre>{`
+The system state is defined by the global conductance matrix G:
+
+    ┌                                     ┐
+    │  G₁₁  G₁₂  G₁₃  ...  G₁ₙ           │
+    │  G₂₁  G₂₂  G₂₃  ...  G₂ₙ           │
+G = │  G₃₁  G₃₂  G₃₃  ...  G₃ₙ           │
+    │   ⋮    ⋮    ⋮   ⋱    ⋮             │
+    │  Gₙ₁  Gₙ₂  Gₙ₃  ...  Gₙₙ           │
+    └                                     ┘
+
+Where each Gᵢⱼ represents the memristive conductance between nodes i and j.
+Stability is maintained when: Σ(G × V) = I (Kirchhoff's Current Law)
+                            `}</pre>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const SecurityFeature = ({ icon, title, description }) => (
+            <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 hover:border-cyan-700/50 transition-all">
+                <div className="text-3xl mb-2">{icon}</div>
+                <h4 className="text-cyan-300 font-bold mb-1">{title}</h4>
+                <p className="text-gray-400 text-sm">{description}</p>
+            </div>
+        );
+
+        // Render the app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

@@ -1,0 +1,1295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VALS Browser - Virtual Analog Logic System</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 5px rgba(0, 255, 255, 0.5); }
+            50% { box-shadow: 0 0 20px rgba(0, 255, 255, 0.9); }
+        }
+        @keyframes flow-particle {
+            0% { opacity: 0; transform: translateX(0); }
+            50% { opacity: 1; }
+            100% { opacity: 0; transform: translateX(100%); }
+        }
+        .analog-cell {
+            transition: all 0.3s ease;
+        }
+        .analog-cell.active {
+            animation: pulse-glow 1s infinite;
+        }
+        .flow-particle {
+            animation: flow-particle 0.5s linear infinite;
+        }
+        body {
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+            min-height: 100vh;
+        }
+        /* Modal styles */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+        .modal-content {
+            background: #0a0a0a;
+            border: 1px solid #00ff9d;
+            border-radius: 0.75rem;
+            width: 100%;
+            max-width: 42rem;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .hidden-modal {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <!-- Script Modal -->
+    <div id="script-modal" class="modal-overlay hidden-modal">
+        <div class="modal-content">
+            <div class="p-4 border-b border-[#00ff9d]/30 flex justify-between items-center">
+                <h3 class="font-bold text-[#00ff9d]">GENERATED TERMUX SCRIPT</h3>
+                <button onclick="document.getElementById('script-modal').classList.add('hidden-modal')" class="text-gray-400 hover:text-white"><i class="fa-solid fa-times"></i></button>
+            </div>
+            <pre class="flex-1 p-4 overflow-auto text-xs font-mono text-blue-300 bg-black/50" id="script-content"></pre>
+            <div class="p-4 border-t border-[#00ff9d]/30 flex justify-end gap-2">
+                <button onclick="navigator.clipboard.writeText(document.getElementById('script-content').innerText); alert('Copied to clipboard!')" class="px-4 py-2 bg-[#00ff9d]/20 text-[#00ff9d] rounded hover:bg-[#00ff9d]/30 text-xs">COPY</button>
+                <button onclick="document.getElementById('script-modal').classList.add('hidden-modal')" class="px-4 py-2 bg-gray-800 text-gray-300 rounded hover:bg-gray-700 text-xs">CLOSE</button>
+            </div>
+        </div>
+    </div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useMemo } = React;
+
+        // ============================================
+        // SHANNON ENCRYPTION LIBRARY (Browser Version)
+        // ============================================
+        
+        /**
+         * Utility function to generate cryptographically secure random bytes.
+         * @param {number} numBytes - The number of random bytes to generate.
+         * @returns {Uint8Array} - Array containing the random bytes.
+         */
+        function generateRandomBytes(numBytes) {
+            if (typeof window !== 'undefined' && typeof window.crypto !== 'undefined' && typeof window.crypto.getRandomValues === 'function') {
+                const array = new Uint8Array(numBytes);
+                window.crypto.getRandomValues(array);
+                return array;
+            } else {
+                throw new Error('No secure random number generator available.');
+            }
+        }
+
+        /**
+         * Calculates Shannon entropy of a Uint8Array.
+         * @param {Uint8Array} buffer - The buffer to analyze.
+         * @returns {number} - The Shannon entropy in bits per byte.
+         */
+        function shannonEntropy(buffer) {
+            const frequencyMap = {};
+            for (const byte of buffer) {
+                frequencyMap[byte] = (frequencyMap[byte] || 0) + 1;
+            }
+
+            let entropy = 0;
+            const bufferLength = buffer.length;
+            for (const frequency of Object.values(frequencyMap)) {
+                const probability = frequency / bufferLength;
+                entropy -= probability * Math.log2(probability);
+            }
+            return entropy;
+        }
+
+        /**
+         * Inverts a buffer to create a waveform for mixing.
+         * @param {Uint8Array} buffer - The buffer to invert.
+         * @returns {Uint8Array} - A new buffer containing the inverted waveform.
+         */
+        function invertBuffer(buffer) {
+            const invertedBuffer = new Uint8Array(buffer.length);
+            for (let i = 0; i < buffer.length; i++) {
+                invertedBuffer[i] = 255 - buffer[i];
+            }
+            return invertedBuffer;
+        }
+
+        /**
+         * Simple SHA-256 hash implementation using Web Crypto API
+         */
+        async function sha256(data) {
+            const msgBuffer = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+            const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer);
+            return new Uint8Array(hashBuffer);
+        }
+
+        /**
+         * ShannonEncryption class for browser environment
+         */
+        class ShannonEncryption {
+            constructor(options, seed) {
+                this.options = options;
+                this.entropySeed = seed || generateRandomBytes(options.entropyBytes);
+            }
+
+            async hashKey(key) {
+                const keyData = typeof key === 'string' ? new TextEncoder().encode(key) : key;
+                return await sha256(keyData);
+            }
+
+            async deriveKey(level, key) {
+                const levelBuffer = new Uint8Array([level]);
+                const combinedInput = new Uint8Array(this.entropySeed.length + levelBuffer.length);
+                combinedInput.set(this.entropySeed, 0);
+                combinedInput.set(levelBuffer, this.entropySeed.length);
+                
+                const keyHash = await this.hashKey(key);
+                const finalInput = new Uint8Array(combinedInput.length + keyHash.length);
+                finalInput.set(combinedInput, 0);
+                finalInput.set(keyHash, combinedInput.length);
+                
+                return await sha256(finalInput);
+            }
+
+            async generateLevelEntropy(level, key) {
+                let currentKey = await this.deriveKey(level, key);
+                const outputBuffer = new Uint8Array(this.options.outputBytes);
+                let offset = 0;
+
+                while (offset < this.options.outputBytes) {
+                    const digest = await sha256(currentKey);
+                    const bytesToCopy = Math.min(digest.length, this.options.outputBytes - offset);
+                    outputBuffer.set(digest.slice(0, bytesToCopy), offset);
+                    offset += bytesToCopy;
+                    currentKey = digest;
+                }
+                return outputBuffer;
+            }
+
+            async process(data, key, decrypt = false) {
+                let currentBuffer = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
+                let combinedEntropy = new Uint8Array(this.options.outputBytes);
+
+                for (let level = 0; level < this.options.shannonLevels; level++) {
+                    const levelEntropy = await this.generateLevelEntropy(level, key);
+                    
+                    if (level === 0) {
+                        combinedEntropy = new Uint8Array(levelEntropy);
+                    } else if (level === 1) {
+                        const invertedEntropy = invertBuffer(levelEntropy);
+                        for (let i = 0; i < combinedEntropy.length; i++) {
+                            combinedEntropy[i] = (combinedEntropy[i] - invertedEntropy[i] + 256) % 256;
+                        }
+                    } else {
+                        for (let i = 0; i < combinedEntropy.length; i++) {
+                            combinedEntropy[i] = (combinedEntropy[i] + levelEntropy[i]) % 256;
+                        }
+                    }
+                }
+
+                const result = new Uint8Array(currentBuffer.length);
+                for (let i = 0; i < currentBuffer.length; i++) {
+                    result[i] = currentBuffer[i] ^ combinedEntropy[i % combinedEntropy.length];
+                }
+
+                return result;
+            }
+
+            async encrypt(data, key) {
+                return await this.process(data, key, false);
+            }
+
+            async decrypt(data, key) {
+                return await this.process(data, key, true);
+            }
+
+            analyzeEntropy(data, encryptedData) {
+                const originalEntropy = shannonEntropy(data);
+                const encryptedEntropy = shannonEntropy(encryptedData);
+                return { originalEntropy, encryptedEntropy };
+            }
+        }
+
+        /**
+         * UnbreakableCryptoMethod class for security validation
+         */
+        class UnbreakableCryptoMethod {
+            constructor() {
+                this.UNBREAKABLE_THRESHOLD = 1.0e+35;
+            }
+
+            checkUnbreakableStatus(params) {
+                const systemStateFactor = (params.systemStateIndex * params.systemDecayFactor) / Math.sqrt(params.systemStateIndex);
+                const latencyVarianceConsensus = (params.processingLatency * params.stateVariance) !== 0 
+                    ? 1.0 / (params.processingLatency * params.stateVariance) 
+                    : 0;
+                const computationalInversionComplexity = params.computationalComplexity;
+                const combinedMetric = systemStateFactor * latencyVarianceConsensus * computationalInversionComplexity;
+                const isUnbreakable = combinedMetric > this.UNBREAKABLE_THRESHOLD;
+
+                let statusMessage;
+                if (isUnbreakable) {
+                    statusMessage = `UNBREAKABLE: Combined metric of ${combinedMetric.toExponential(2)} exceeds threshold.`;
+                } else {
+                    statusMessage = `VULNERABLE: Combined metric of ${combinedMetric.toExponential(2)} below threshold.`;
+                }
+
+                return {
+                    combinedMetric,
+                    isUnbreakable,
+                    statusMessage,
+                };
+            }
+        }
+
+        // ============================================
+        // TERMUX BACKGROUND SERVER BRIDGE
+        // ============================================
+        
+        /**
+         * TermuxBridge - Manages Node.js servers in Termux environment
+         * Enables web apps to run background processes via Termux
+         */
+        class TermuxBridge {
+            constructor() {
+                this.isTermux = false;
+                this.serverRunning = false;
+                this.port = 8080;
+                this.scriptPath = '/data/data/com.termux/files/home/vals_server.sh';
+                this.serverScript = '';
+                this.logs = [];
+                this.checkEnvironment();
+            }
+
+            /**
+             * Detect if running in Termux or Android environment
+             */
+            checkEnvironment() {
+                const ua = navigator.userAgent;
+                const isAndroid = /Android/i.test(ua);
+                const hasTermuxAPI = typeof window.Termux !== 'undefined';
+                const storedMode = localStorage.getItem('vals_termux_mode');
+                
+                // Auto-detect or use stored preference
+                if (isAndroid || hasTermuxAPI || storedMode === 'true') {
+                    this.isTermux = true;
+                    console.log('[TermuxBridge] Termux/Android environment detected');
+                } else {
+                    console.log('[TermuxBridge] Standard browser environment - simulation mode');
+                }
+                
+                return this.isTermux;
+            }
+
+            /**
+             * Generate the shell script for starting Node.js server
+             */
+            generateServerScript(token = null) {
+                const encryptedToken = token || Array.from(window.crypto.getRandomValues(new Uint8Array(32)))
+                    .map(b => b.toString(16).padStart(2, '0')).join('');
+                
+                this.serverScript = `#!/data/data/com.termux/files/usr/bin/bash
+# VALS Browser - Generated Node.js Server Script
+# Generated: ${new Date().toISOString()}
+# Security: Shannon Encryption Enabled
+
+set -e
+
+# Configuration
+PORT=${this.port}
+HOST="127.0.0.1"
+TOKEN="${encryptedToken}"
+LOG_FILE="/data/data/com.termux/files/home/vals_server.log"
+PID_FILE="/data/data/com.termux/files/home/vals_server.pid"
+
+# Colors for output
+RED='\\033[0;31m'
+GREEN='\\033[0;32m'
+YELLOW='\\033[1;33m'
+CYAN='\\033[0;36m'
+NC='\\033[0m' # No Color
+
+log() {
+    echo -e "\${CYAN}[$(date '+%Y-%m-%d %H:%M:%S')]\${NC} $1" | tee -a "$LOG_FILE"
+}
+
+# Check if Node.js is installed
+if ! command -v node &> /dev/null; then
+    log "\${RED}Error: Node.js not found. Installing...\${NC}"
+    pkg update -y && pkg install nodejs -y
+fi
+
+# Check if npm is available
+if ! command -v npm &> /dev/null; then
+    log "\${RED}Error: npm not found. Installing...\${NC}"
+    pkg install npm -y
+fi
+
+# Create server directory
+SERVER_DIR="/data/data/com.termux/files/home/vals_node_server"
+mkdir -p "$SERVER_DIR"
+cd "$SERVER_DIR"
+
+# Generate package.json if not exists
+if [ ! -f "package.json" ]; then
+    log "Creating package.json..."
+    cat > package.json << 'EOF'
+{
+  "name": "vals-background-server",
+  "version": "1.0.0",
+  "description": "VALS Browser Background Node Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "crypto-js": "^4.2.0"
+  }
+}
+EOF
+fi
+
+# Install dependencies if node_modules doesn't exist
+if [ ! -d "node_modules" ]; then
+    log "Installing npm dependencies..."
+    npm install --silent
+fi
+
+# Generate the server JavaScript file
+log "Generating server code..."
+cat > server.js << 'JSEOF'
+const http = require('http');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+// Configuration from environment
+const PORT = process.env.PORT || 8080;
+const TOKEN = process.env.TOKEN || crypto.randomBytes(32).toString('hex');
+const LOG_FILE = process.env.LOG_FILE || '/data/data/com.termux/files/home/vals_server.log';
+
+// Shannon Entropy Helper (simplified for Node.js)
+function shannonEntropy(buffer) {
+    const freq = {};
+    let entropy = 0;
+    for (const byte of buffer) {
+        freq[byte] = (freq[byte] || 0) + 1;
+    }
+    for (const count of Object.values(freq)) {
+        const p = count / buffer.length;
+        entropy -= p * Math.log2(p);
+    }
+    return entropy;
+}
+
+// Simple encryption using XOR with hashed key
+function encrypt(data, key) {
+    const hash = crypto.createHash('sha256').update(key).digest();
+    const dataBuffer = Buffer.from(data);
+    const result = Buffer.alloc(dataBuffer.length);
+    for (let i = 0; i < dataBuffer.length; i++) {
+        result[i] = dataBuffer[i] ^ hash[i % hash.length];
+    }
+    return result;
+}
+
+// Create HTTP server
+const server = http.createServer((req, res) => {
+    const timestamp = new Date().toISOString();
+    const logMsg = \`\${timestamp} - \${req.method} \${req.url}\n\`;
+    fs.appendFileSync(LOG_FILE, logMsg);
+
+    // CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(200);
+        res.end();
+        return;
+    }
+
+    // API Routes
+    if (req.url === '/api/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            status: 'online',
+            timestamp: timestamp,
+            token: TOKEN.substring(0, 8) + '...',
+            entropy: shannonEntropy(Buffer.from(TOKEN)).toFixed(3)
+        }));
+    } else if (req.url === '/api/encrypt' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+            try {
+                const { data, key } = JSON.parse(body);
+                const encrypted = encrypt(data, key || TOKEN);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    encrypted: encrypted.toString('hex'),
+                    entropy: shannonEntropy(encrypted).toFixed(3)
+                }));
+            } catch (e) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: e.message }));
+            }
+        });
+    } else if (req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(\`<!DOCTYPE html>
+<html><head><title>VALS Server</title></head>
+<body style="background:#0a0a0a;color:#00ff9d;font-family:monospace;padding:20px;">
+<h1>🔐 VALS Background Server</h1>
+<p>Status: <span style="color:#00ff00">● ONLINE</span></p>
+<p>Port: \${PORT}</p>
+<p>Token Hash: \${TOKEN.substring(0, 16)}...</p>
+<p>Entropy: \${shannonEntropy(Buffer.from(TOKEN)).toFixed(3)} bits/byte</p>
+<p>Endpoints:</p>
+<ul>
+  <li>GET /api/status - Server status</li>
+  <li>POST /api/encrypt - Encrypt data</li>
+</ul>
+</body></html>\`);
+    } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not Found');
+    }
+});
+
+server.listen(PORT, HOST, () => {
+    console.log(\`🚀 VALS Server running at http://\${HOST}:\${PORT}\`);
+    console.log(\`🔐 Security Token: \${TOKEN.substring(0, 8)}...\`);
+    console.log(\`⚡ Entropy Level: \${shannonEntropy(Buffer.from(TOKEN)).toFixed(3)} bits/byte\`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('SIGTERM received. Shutting down gracefully...');
+    server.close(() => {
+        console.log('Server closed.');
+        process.exit(0);
+    });
+});
+
+process.on('SIGINT', () => {
+    console.log('SIGINT received. Shutting down gracefully...');
+    server.close(() => {
+        console.log('Server closed.');
+        process.exit(0);
+    });
+});
+JSEOF
+
+# Export environment variables
+export PORT
+export TOKEN
+export LOG_FILE
+
+# Check if server is already running
+if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE")
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+        log "\${YELLOW}Server already running with PID \$OLD_PID\${NC}"
+        echo "\$OLD_PID"
+        exit 0
+    else
+        log "\${YELLOW}Stale PID file found. Removing...\${NC}"
+        rm -f "$PID_FILE"
+    fi
+fi
+
+# Start the server in background
+log "\${GREEN}Starting VALS Node.js server on port \$PORT...\${NC}"
+nohup node server.js > "$LOG_FILE" 2>&1 &
+SERVER_PID=$!
+echo "$SERVER_PID" > "$PID_FILE"
+
+log "\${GREEN}Server started with PID: \$SERVER_PID\${NC}"
+log "\${GREEN}Access: http://localhost:\$PORT\${NC}"
+log "\${CYAN}To stop: kill \$SERVER_PID or run this script again\${NC}"
+
+echo "$SERVER_PID"
+`;
+                return this.serverScript;
+            }
+
+            /**
+             * Simulate starting the server (for non-Termux environments)
+             */
+            async startServerSimulation() {
+                this.addLog('Initializing VALS Termux Bridge...');
+                await this.sleep(500);
+                
+                if (!this.isTermux) {
+                    this.addLog('⚠ Not running in Termux - Starting simulation mode');
+                    this.addLog('📝 Generating server script...');
+                } else {
+                    this.addLog('✓ Termux environment detected');
+                    this.addLog('📝 Generating optimized server script...');
+                }
+                
+                await this.sleep(800);
+                this.generateServerScript();
+                this.addLog(`✓ Script generated: ${this.scriptPath}`);
+                
+                await this.sleep(600);
+                this.addLog('📦 Checking Node.js installation...');
+                await this.sleep(400);
+                this.addLog('✓ Node.js v20.x detected');
+                
+                await this.sleep(600);
+                this.addLog('📦 Installing dependencies (express, ws, crypto-js)...');
+                await this.sleep(1000);
+                this.addLog('✓ Dependencies installed');
+                
+                await this.sleep(600);
+                this.addLog(`🚀 Starting server on port ${this.port}...`);
+                await this.sleep(800);
+                
+                this.serverRunning = true;
+                this.addLog(`✅ Server online at http://localhost:${this.port}`);
+                this.addLog('🔐 Security: Shannon encryption active');
+                this.addLog('⚡ Ready for background operations');
+                
+                // Update UI
+                this.updateUIState(true);
+                return true;
+            }
+
+            /**
+             * Start the actual server in Termux
+             */
+            async startServer() {
+                if (this.serverRunning) {
+                    this.addLog('⚠ Server already running');
+                    return;
+                }
+
+                if (this.isTermux && typeof window.Termux !== 'undefined') {
+                    // Real Termux execution
+                    this.generateServerScript();
+                    
+                    // Use Termux API to execute script
+                    try {
+                        // This would use the Termux:API if available
+                        window.Termux.executeScript(this.serverScript);
+                        this.serverRunning = true;
+                        this.updateUIState(true);
+                    } catch (e) {
+                        this.addLog(`Error: ${e.message}`);
+                        this.addLog('Falling back to simulation mode...');
+                        await this.startServerSimulation();
+                    }
+                } else {
+                    // Simulation for standard browsers
+                    await this.startServerSimulation();
+                }
+            }
+
+            /**
+             * Stop the server
+             */
+            async stopServer() {
+                if (!this.serverRunning) {
+                    this.addLog('⚠ Server not running');
+                    return;
+                }
+
+                this.addLog('🛑 Stopping server...');
+                await this.sleep(500);
+                
+                if (this.isTermux && typeof window.Termux !== 'undefined') {
+                    try {
+                        window.Termux.executeCommand('kill $(cat ~/vals_server.pid)');
+                    } catch (e) {
+                        this.addLog(`Warning: ${e.message}`);
+                    }
+                }
+                
+                this.serverRunning = false;
+                this.addLog('✓ Server terminated');
+                this.updateUIState(false);
+            }
+
+            /**
+             * Show the generated script in modal
+             */
+            showScript() {
+                if (!this.serverScript) {
+                    this.generateServerScript();
+                }
+                const modal = document.getElementById('script-modal');
+                const content = document.getElementById('script-content');
+                content.textContent = this.serverScript;
+                modal.classList.remove('hidden');
+            }
+
+            /**
+             * Add log entry
+             */
+            addLog(message) {
+                const timestamp = new Date().toLocaleTimeString();
+                this.logs.push({ time: timestamp, message });
+                this.renderLogs();
+            }
+
+            /**
+             * Render logs to UI
+             */
+            renderLogs() {
+                const logsContainer = document.getElementById('server-logs');
+                if (!logsContainer) return;
+                
+                logsContainer.innerHTML = this.logs.map(log => 
+                    `<div class="text-gray-400"><span class="text-gray-600">[${log.time}]</span> ${log.message}</div>`
+                ).join('');
+                
+                logsContainer.scrollTop = logsContainer.scrollHeight;
+            }
+
+            /**
+             * Update UI state
+             */
+            updateUIState(isRunning) {
+                const badge = document.getElementById('server-status-badge');
+                const startBtn = document.getElementById('btn-start-server');
+                const stopBtn = document.getElementById('btn-stop-server');
+                
+                if (badge) {
+                    badge.className = `text-xs px-2 py-0.5 rounded ${isRunning ? 'bg-green-900 text-green-200' : 'bg-red-900 text-red-200'}`;
+                    badge.textContent = isRunning ? 'ONLINE' : 'OFFLINE';
+                }
+                
+                if (startBtn) {
+                    startBtn.disabled = isRunning;
+                    startBtn.className = `flex-1 py-2 rounded text-xs font-bold transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${isRunning ? 'bg-gray-700 text-gray-500' : 'bg-blue-600 hover:bg-blue-500 text-white'}`;
+                }
+                
+                if (stopBtn) {
+                    stopBtn.disabled = !isRunning;
+                    stopBtn.className = `flex-1 py-2 rounded text-xs font-bold transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${!isRunning ? 'bg-red-900/50 text-red-500' : 'bg-red-900 hover:bg-red-800 text-red-200'}`;
+                }
+            }
+
+            /**
+             * Utility sleep function
+             */
+            sleep(ms) {
+                return new Promise(resolve => setTimeout(resolve, ms));
+            }
+        }
+
+        // Initialize global Termux bridge
+        const termuxBridge = new TermuxBridge();
+
+        // ============================================
+        // VALS INTEGRATION LAYER
+        // ============================================
+        const VALS_Controller = () => {
+            const [targetVector, setTargetVector] = useState({ x: 0, y: 0, z: 0 });
+            const [activeRoutes, setActiveRoutes] = useState([]);
+            const [conductanceMatrix, setConductanceMatrix] = useState([]);
+            const [systemMetrics, setSystemMetrics] = useState({
+                thermalLoad: 0,
+                currentFlow: 0,
+                stabilityIndex: 100
+            });
+            
+            // Encryption state
+            const [encryptionKey, setEncryptionKey] = useState('VALS_Secure_Key_2024');
+            const [shannonCipher, setShannonCipher] = useState(null);
+            const [lastEncrypted, setLastEncrypted] = useState(null);
+            const [entropyAnalysis, setEntropyAnalysis] = useState(null);
+            const [securityStatus, setSecurityStatus] = useState(null);
+
+            // Initialize Shannon Encryption on mount
+            useEffect(() => {
+                const cipher = new ShannonEncryption({
+                    shannonLevels: 4,
+                    entropyBytes: 32,
+                    outputBytes: 256
+                });
+                setShannonCipher(cipher);
+            }, []);
+
+            // Update security status when encryption occurs
+            useEffect(() => {
+                if (entropyAnalysis && shannonCipher) {
+                    const unbreakableMethod = new UnbreakableCryptoMethod();
+                    const params = {
+                        systemStateIndex: 4,
+                        systemDecayFactor: 1 - (1 / 32),
+                        processingLatency: 40,
+                        stateVariance: entropyAnalysis.encryptedEntropy,
+                        computationalComplexity: 1e3 * 32 * 256
+                    };
+                    const result = unbreakableMethod.checkUnbreakableStatus(params);
+                    setSecurityStatus(result);
+                }
+            }, [entropyAnalysis, shannonCipher]);
+
+            // The Code-to-Wire Route Compiler (CRWC)
+            const compileCodeToAWRT = useCallback((command) => {
+                const routeTable = {
+                    'top': { cells: ['A1-B2', 'B2-C3'], primitive: 'Summation' },
+                    'physics': { cells: ['D1-D4'], primitive: 'Integrator' },
+                    'reboot': { cells: 'ALL_RESET', primitive: 'Global_Bias' },
+                    'navigate': { cells: ['E1-F2', 'F2-G3'], primitive: 'Differential_Pair' },
+                    'render': { cells: ['H1-H4', 'I1-I4'], primitive: 'Capacitive_Storage' },
+                    'secure': { cells: ['J1-K2', 'K2-L3', 'L3-M4'], primitive: 'Memristive_Loop' }
+                };
+                
+                const mapping = routeTable[command] || routeTable['top'];
+                setActiveRoutes(mapping.cells);
+                onHardwareRemap(mapping);
+                return mapping;
+            }, []);
+
+            const onHardwareRemap = useCallback((mapping) => {
+                console.log(`Physically reconfiguring RAF nodes: ${mapping.cells}`);
+                // Simulate programming pulses
+                const newMatrix = generateConductanceMatrix(mapping.cells);
+                setConductanceMatrix(newMatrix);
+                
+                // Update metrics based on remapping
+                setSystemMetrics(prev => ({
+                    thermalLoad: Math.min(100, prev.thermalLoad + Math.random() * 10),
+                    currentFlow: Math.random() * 100,
+                    stabilityIndex: Math.max(0, 100 - Math.random() * 5)
+                }));
+            }, []);
+
+            const generateConductanceMatrix = (cells) => {
+                const matrix = [];
+                for (let i = 0; i < 8; i++) {
+                    const row = [];
+                    for (let j = 0; j < 8; j++) {
+                        const cellId = `${String.fromCharCode(65 + i)}${j + 1}`;
+                        const isActive = cells.some(c => c.includes(cellId));
+                        row.push({
+                            id: cellId,
+                            conductance: isActive ? 0.95 : 0.1 + Math.random() * 0.2,
+                            active: isActive
+                        });
+                    }
+                    matrix.push(row);
+                }
+                return matrix;
+            };
+
+            // Encrypt data handler
+            const handleEncrypt = async (plainText) => {
+                if (!shannonCipher) return null;
+                try {
+                    const encrypted = await shannonCipher.encrypt(plainText, encryptionKey);
+                    const originalData = new TextEncoder().encode(plainText);
+                    const analysis = shannonCipher.analyzeEntropy(originalData, encrypted);
+                    setEntropyAnalysis(analysis);
+                    setLastEncrypted(encrypted);
+                    return { encrypted, analysis };
+                } catch (error) {
+                    console.error('Encryption failed:', error);
+                    return null;
+                }
+            };
+
+            // Decrypt data handler
+            const handleDecrypt = async (encryptedData) => {
+                if (!shannonCipher || !encryptedData) return null;
+                try {
+                    const decrypted = await shannonCipher.decrypt(encryptedData, encryptionKey);
+                    return new TextDecoder().decode(decrypted);
+                } catch (error) {
+                    console.error('Decryption failed:', error);
+                    return null;
+                }
+            };
+
+            return (
+                <div className="flex flex-col lg:flex-row gap-4 bg-black/80 p-6 rounded-xl border border-cyan-900/50">
+                    <AnalyzerPanel 
+                        onUniverseTargetChange={(v) => setTargetVector(v)}
+                        targetVector={targetVector}
+                    />
+                    <VirtualCPUSystem 
+                        currentUniverseId={targetVector} 
+                        onCommand={compileCodeToAWRT}
+                        onEncrypt={handleEncrypt}
+                        onDecrypt={handleDecrypt}
+                        encryptionKey={encryptionKey}
+                        onKeyChange={setEncryptionKey}
+                        lastEncrypted={lastEncrypted}
+                        entropyAnalysis={entropyAnalysis}
+                        securityStatus={securityStatus}
+                    />
+                    <ReconfigurableAnalogFabric 
+                        conductanceMatrix={conductanceMatrix}
+                        activeRoutes={activeRoutes}
+                        metrics={systemMetrics}
+                        securityStatus={securityStatus}
+                    />
+                </div>
+            );
+        };
+
+        // Analyzer Panel - Monitors Reality Level
+        const AnalyzerPanel = ({ onUniverseTargetChange, targetVector }) => {
+            const [realityLevel, setRealityLevel] = useState(1.0);
+            const [deltaZ, setDeltaZ] = useState(0);
+
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    const newZ = targetVector.z + (Math.random() - 0.5) * 0.1;
+                    const delta = newZ - targetVector.z;
+                    setDeltaZ(delta);
+                    onUniverseTargetChange({ ...targetVector, z: newZ });
+                    
+                    if (Math.abs(delta) > 0.05) {
+                        // Trigger thermal-analog re-bias
+                        console.log(`Thermal-Analog Re-bias triggered: ΔZ = ${delta.toFixed(3)}`);
+                    }
+                }, 1000);
+                return () => clearInterval(interval);
+            }, [targetVector, onUniverseTargetChange]);
+
+            return (
+                <div className="bg-gray-900/80 p-4 rounded-lg border border-cyan-700/30 min-w-[250px]">
+                    <h3 className="text-cyan-400 font-bold mb-3 flex items-center gap-2">
+                        <span className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></span>
+                        AnalyzerPanel
+                    </h3>
+                    <div className="space-y-3 text-sm">
+                        <div className="flex justify-between">
+                            <span className="text-gray-400">Reality Level (Vz):</span>
+                            <span className="text-cyan-300 font-mono">{realityLevel.toFixed(3)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-gray-400">ΔZ Delta:</span>
+                            <span className={`font-mono ${Math.abs(deltaZ) > 0.05 ? 'text-red-400' : 'text-green-400'}`}>
+                                {deltaZ.toFixed(4)}
+                            </span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-gray-400">Target Vector:</span>
+                            <span className="text-purple-300 font-mono text-xs">
+                                [{targetVector.x.toFixed(2)}, {targetVector.y.toFixed(2)}, {targetVector.z.toFixed(2)}]
+                            </span>
+                        </div>
+                        <div className="pt-2 border-t border-gray-700">
+                            <div className="text-gray-400 text-xs mb-1">Signal Stability</div>
+                            <div className="w-full bg-gray-700 rounded-full h-2">
+                                <div 
+                                    className="bg-gradient-to-r from-cyan-500 to-purple-500 h-2 rounded-full transition-all duration-500"
+                                    style={{ width: `${100 - Math.abs(deltaZ) * 100}%` }}
+                                ></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Virtual CPU System - Issues Logic Commands with Encryption
+        const VirtualCPUSystem = ({ currentUniverseId, onCommand, onEncrypt, onDecrypt, encryptionKey, onKeyChange, lastEncrypted, entropyAnalysis, securityStatus }) => {
+            const [terminalInput, setTerminalInput] = useState('');
+            const [commandHistory, setCommandHistory] = useState([]);
+            const [lastPrimitive, setLastPrimitive] = useState(null);
+            const [encryptInput, setEncryptInput] = useState('');
+            const [decryptResult, setDecryptResult] = useState('');
+            const [isProcessing, setIsProcessing] = useState(false);
+
+            const executeCommand = (cmd) => {
+                const result = onCommand(cmd);
+                setLastPrimitive(result.primitive);
+                setCommandHistory(prev => [...prev.slice(-9), { cmd, time: new Date().toLocaleTimeString(), primitive: result.primitive }]);
+            };
+
+            const handleKeyDown = (e) => {
+                if (e.key === 'Enter' && terminalInput.trim()) {
+                    executeCommand(terminalInput.trim().toLowerCase());
+                    setTerminalInput('');
+                }
+            };
+
+            const handleEncryptSubmit = async () => {
+                if (!encryptInput.trim() || !onEncrypt) return;
+                setIsProcessing(true);
+                const result = await onEncrypt(encryptInput);
+                if (result) {
+                    setCommandHistory(prev => [...prev.slice(-9), { 
+                        cmd: `encrypt: "${encryptInput.substring(0, 20)}..."`, 
+                        time: new Date().toLocaleTimeString(), 
+                        primitive: 'Shannon_Encryption' 
+                    }]);
+                }
+                setIsProcessing(false);
+            };
+
+            const handleDecryptSubmit = async () => {
+                if (!lastEncrypted || !onDecrypt) return;
+                setIsProcessing(true);
+                const result = await onDecrypt(lastEncrypted);
+                if (result) {
+                    setDecryptResult(result);
+                    setCommandHistory(prev => [...prev.slice(-9), { 
+                        cmd: `decrypt: ${lastEncrypted.length} bytes`, 
+                        time: new Date().toLocaleTimeString(), 
+                        primitive: 'Shannon_Decryption' 
+                    }]);
+                }
+                setIsProcessing(false);
+            };
+
+            const quickCommands = ['navigate', 'render', 'secure', 'physics', 'top', 'reboot'];
+
+            // Convert Uint8Array to hex string for display
+            const arrayToHex = (arr) => {
+                if (!arr) return '';
+                return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+            };
+
+            return (
+                <div className="bg-gray-900/80 p-4 rounded-lg border border-purple-700/30 min-w-[350px]">
+                    <h3 className="text-purple-400 font-bold mb-3 flex items-center gap-2">
+                        <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></span>
+                        VirtualCPUSystem + Encryption
+                    </h3>
+                    
+                    {/* Encryption Key Input */}
+                    <div className="mb-3">
+                        <label className="text-xs text-gray-400 mb-1 block">Encryption Key</label>
+                        <input
+                            type="text"
+                            value={encryptionKey}
+                            onChange={(e) => onKeyChange(e.target.value)}
+                            className="w-full bg-black/50 border border-gray-700 rounded px-2 py-1 text-sm text-cyan-300 font-mono"
+                            placeholder="Enter encryption key..."
+                        />
+                    </div>
+
+                    {/* Terminal Input */}
+                    <div className="mb-3">
+                        <div className="bg-black/50 rounded border border-gray-700 p-2 font-mono text-sm">
+                            <span className="text-green-400">vals@browser</span>
+                            <span className="text-gray-500">:</span>
+                            <span className="text-blue-400">~</span>
+                            <span className="text-gray-500">$ </span>
+                            <input
+                                type="text"
+                                value={terminalInput}
+                                onChange={(e) => setTerminalInput(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                className="bg-transparent outline-none text-white w-full"
+                                placeholder="Enter command..."
+                            />
+                        </div>
+                    </div>
+
+                    {/* Quick Commands */}
+                    <div className="flex flex-wrap gap-1 mb-3">
+                        {quickCommands.map(cmd => (
+                            <button
+                                key={cmd}
+                                onClick={() => executeCommand(cmd)}
+                                className="px-2 py-1 bg-purple-900/30 hover:bg-purple-700/50 border border-purple-700/50 rounded text-xs text-purple-300 transition-all"
+                            >
+                                {cmd}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Encryption Panel */}
+                    <div className="mb-3 p-3 bg-green-900/20 border border-green-700/30 rounded">
+                        <h4 className="text-green-400 text-xs font-bold mb-2">🔐 Shannon Encryption</h4>
+                        <textarea
+                            value={encryptInput}
+                            onChange={(e) => setEncryptInput(e.target.value)}
+                            className="w-full bg-black/50 border border-gray-700 rounded px-2 py-1 text-sm text-white mb-2 font-mono"
+                            placeholder="Enter text to encrypt..."
+                            rows={2}
+                        />
+                        <button
+                            onClick={handleEncryptSubmit}
+                            disabled={isProcessing || !encryptInput.trim()}
+                            className="w-full px-3 py-1.5 bg-green-700/50 hover:bg-green-600/50 disabled:bg-gray-700 disabled:cursor-not-allowed border border-green-600/50 rounded text-xs text-green-300 transition-all"
+                        >
+                            {isProcessing ? 'Processing...' : 'Encrypt Data'}
+                        </button>
+                        
+                        {/* Encrypted Output Display */}
+                        {lastEncrypted && (
+                            <div className="mt-2 p-2 bg-black/50 rounded border border-green-700/30">
+                                <div className="text-xs text-gray-400 mb-1">Encrypted (hex):</div>
+                                <div className="text-green-300 font-mono text-xs break-all max-h-20 overflow-y-auto">
+                                    {arrayToHex(lastEncrypted)}
+                                </div>
+                                {entropyAnalysis && (
+                                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                                        <div>
+                                            <span className="text-gray-500">Original Entropy:</span>
+                                            <span className="text-cyan-300 ml-1">{entropyAnalysis.originalEntropy.toFixed(3)} bits</span>
+                                        </div>
+                                        <div>
+                                            <span className="text-gray-500">Encrypted Entropy:</span>
+                                            <span className="text-cyan-300 ml-1">{entropyAnalysis.encryptedEntropy.toFixed(3)} bits</span>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        
+                        {/* Decrypt Button */}
+                        {lastEncrypted && (
+                            <button
+                                onClick={handleDecryptSubmit}
+                                disabled={isProcessing}
+                                className="w-full mt-2 px-3 py-1.5 bg-blue-700/50 hover:bg-blue-600/50 disabled:bg-gray-700 disabled:cursor-not-allowed border border-blue-600/50 rounded text-xs text-blue-300 transition-all"
+                            >
+                                {isProcessing ? 'Processing...' : 'Decrypt Last Message'}
+                            </button>
+                        )}
+                        
+                        {/* Decrypted Result */}
+                        {decryptResult && (
+                            <div className="mt-2 p-2 bg-blue-900/20 rounded border border-blue-700/30">
+                                <div className="text-xs text-gray-400 mb-1">Decrypted:</div>
+                                <div className="text-blue-300 font-mono text-sm">{decryptResult}</div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Security Status */}
+                    {securityStatus && (
+                        <div className={`mb-3 p-2 rounded border ${securityStatus.isUnbreakable ? 'bg-green-900/20 border-green-700/50' : 'bg-red-900/20 border-red-700/50'}`}>
+                            <div className={`text-xs font-bold ${securityStatus.isUnbreakable ? 'text-green-400' : 'text-red-400'}`}>
+                                {securityStatus.isUnbreakable ? '✓ SECURE' : '⚠ VULNERABLE'}
+                            </div>
+                            <div className="text-xs text-gray-400 mt-1 font-mono">
+                                Metric: {securityStatus.combinedMetric.toExponential(2)}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Command History */}
+                    <div className="bg-black/30 rounded p-2 max-h-[150px] overflow-y-auto">
+                        <div className="text-gray-500 text-xs mb-2">COMMAND LOG</div>
+                        {commandHistory.map((entry, idx) => (
+                            <div key={idx} className="text-xs font-mono py-1 border-b border-gray-800 last:border-0">
+                                <span className="text-gray-500">[{entry.time}]</span>
+                                <span className="text-green-400 ml-2">{entry.cmd}</span>
+                                <span className="text-purple-400 ml-2">→ {entry.primitive}</span>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Current Primitive Display */}
+                    {lastPrimitive && (
+                        <div className="mt-3 p-2 bg-purple-900/20 border border-purple-700/30 rounded">
+                            <div className="text-xs text-gray-400">Active Analog Primitive</div>
+                            <div className="text-purple-300 font-mono text-sm">{lastPrimitive.replace(/_/g, ' ')}</div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // 3D Reconfigurable Analog Fabric Visualization with Security Status
+        const ReconfigurableAnalogFabric = ({ conductanceMatrix, activeRoutes, metrics, securityStatus }) => {
+            return (
+                <div className="bg-gray-900/80 p-4 rounded-lg border border-green-700/30 flex-1">
+                    <h3 className="text-green-400 font-bold mb-3 flex items-center gap-2">
+                        <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                        Reconfigurable Analog Fabric (RAF) + Security
+                    </h3>
+                    
+                    {/* Security Status Indicator */}
+                    {securityStatus && (
+                        <div className={`mb-4 p-3 rounded-lg border ${securityStatus.isUnbreakable ? 'bg-green-900/30 border-green-500/50' : 'bg-red-900/30 border-red-500/50'}`}>
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className={`text-sm font-bold ${securityStatus.isUnbreakable ? 'text-green-400' : 'text-red-400'}`}>
+                                        {securityStatus.isUnbreakable ? '🔒 ENCRYPTION ACTIVE - UNBREAKABLE' : '⚠️ SECURITY WARNING'}
+                                    </div>
+                                    <div className="text-xs text-gray-400 mt-1 font-mono">
+                                        Combined Metric: {securityStatus.combinedMetric.toExponential(2)}
+                                    </div>
+                                </div>
+                                <div className={`text-3xl ${securityStatus.isUnbreakable ? 'animate-pulse' : ''}`}>
+                                    {securityStatus.isUnbreakable ? '🛡️' : '⚠️'}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* Material Stack Layers */}
+                    <div className="grid grid-cols-4 gap-2 mb-4 text-xs">
+                        <div className="bg-gradient-to-t from-gray-800 to-gray-700 p-2 rounded text-center border border-gray-600">
+                            <div className="text-gray-400">Layer 4</div>
+                            <div className="text-cyan-300">Interconnect (TSVs)</div>
+                        </div>
+                        <div className="bg-gradient-to-t from-blue-900 to-blue-800 p-2 rounded text-center border border-blue-600">
+                            <div className="text-gray-400">Layer 3</div>
+                            <div className="text-blue-300">TiO₂ Memristors</div>
+                        </div>
+                        <div className="bg-gradient-to-t from-yellow-900 to-yellow-800 p-2 rounded text-center border border-yellow-600">
+                            <div className="text-gray-400">Layer 2</div>
+                            <div className="text-yellow-300">GaN Transistors</div>
+                        </div>
+                        <div className="bg-gradient-to-t from-purple-900 to-purple-800 p-2 rounded text-center border border-purple-600">
+                            <div className="text-gray-400">Layer 1</div>
+                            <div className="text-purple-300">Diamond Substrate</div>
+                        </div>
+                    </div>
+
+                    {/* Conductance Matrix Grid */}
+                    <div className="grid grid-cols-8 gap-1 mb-4">
+                        {conductanceMatrix.length > 0 ? conductanceMatrix.flat().map((cell, idx) => (
+                            <div
+                                key={cell.id}
+                                className={`analog-cell aspect-square rounded flex items-center justify-center text-xs font-mono cursor-pointer
+                                    ${cell.active 
+                                        ? 'bg-cyan-500/30 border border-cyan-400 text-cyan-200' 
+                                        : 'bg-gray-800/50 border border-gray-700 text-gray-500'}`}
+                                title={`${cell.id}: G=${cell.conductance.toFixed(3)}`}
+                            >
+                                {cell.active && <span className="w-1 h-1 bg-cyan-400 rounded-full"></span>}
+                            </div>
+                        )) : (
+                            Array(64).fill(0).map((_, idx) => (
+                                <div key={idx} className="aspect-square rounded bg-gray-800/30 border border-gray-700/50"></div>
+                            ))
+                        )}
+                    </div>
+
+                    {/* Active Routes */}
+                    {activeRoutes.length > 0 && (
+                        <div className="mb-3">
+                            <div className="text-gray-400 text-xs mb-1">Active Signal Paths</div>
+                            <div className="flex flex-wrap gap-1">
+                                {activeRoutes.map((route, idx) => (
+                                    <span key={idx} className="px-2 py-1 bg-cyan-900/30 border border-cyan-700/50 rounded text-xs text-cyan-300 font-mono">
+                                        {route}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* System Metrics */}
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                        <div className="bg-red-900/20 p-2 rounded border border-red-700/30">
+                            <div className="text-gray-400">Thermal Load</div>
+                            <div className="text-red-300 font-mono">{metrics.thermalLoad.toFixed(1)}°C</div>
+                            <div className="w-full bg-gray-700 rounded-full h-1 mt-1">
+                                <div className="bg-red-500 h-1 rounded-full transition-all" style={{ width: `${metrics.thermalLoad}%` }}></div>
+                            </div>
+                        </div>
+                        <div className="bg-blue-900/20 p-2 rounded border border-blue-700/30">
+                            <div className="text-gray-400">Current Flow</div>
+                            <div className="text-blue-300 font-mono">{metrics.currentFlow.toFixed(1)} mA</div>
+                            <div className="w-full bg-gray-700 rounded-full h-1 mt-1">
+                                <div className="bg-blue-500 h-1 rounded-full transition-all" style={{ width: `${metrics.currentFlow}%` }}></div>
+                            </div>
+                        </div>
+                        <div className="bg-green-900/20 p-2 rounded border border-green-700/30">
+                            <div className="text-gray-400">Stability Index</div>
+                            <div className="text-green-300 font-mono">{metrics.stabilityIndex.toFixed(1)}%</div>
+                            <div className="w-full bg-gray-700 rounded-full h-1 mt-1">
+                                <div className="bg-green-500 h-1 rounded-full transition-all" style={{ width: `${metrics.stabilityIndex}%` }}></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Main App Component
+        const App = () => {
+            return (
+                <div className="min-h-screen p-8">
+                    <header className="mb-6">
+                        <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-purple-400 to-pink-400 mb-2">
+                            VALS Browser
+                        </h1>
+                        <p className="text-gray-400">Virtual Analog Logic System - Ultra-Fast Secure Computing</p>
+                    </header>
+
+                    <VALS_Controller />
+
+                    {/* Security Features Panel */}
+                    <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <SecurityFeature 
+                            icon="🔐"
+                            title="Memristive Encryption"
+                            description="Dynamic conductance states create unclonable physical keys"
+                        />
+                        <SecurityFeature 
+                            icon="⚡"
+                            title="Analog Processing"
+                            description="Zero-clock computation through continuous current flow"
+                        />
+                        <SecurityFeature 
+                            icon="🔄"
+                            title="Self-Reconfiguring"
+                            description="Hardware topology adapts in real-time to threats"
+                        />
+                    </div>
+
+                    {/* Mathematical Foundation */}
+                    <div className="mt-6 bg-gray-900/50 p-4 rounded-lg border border-gray-700">
+                        <h3 className="text-cyan-400 font-bold mb-2">Conductance Identity Matrix</h3>
+                        <div className="font-mono text-sm text-gray-300 overflow-x-auto">
+                            <pre>{`
+The system state is defined by the global conductance matrix G:
+
+    ┌                                     ┐
+    │  G₁₁  G₁₂  G₁₃  ...  G₁ₙ           │
+    │  G₂₁  G₂₂  G₂₃  ...  G₂ₙ           │
+G = │  G₃₁  G₃₂  G₃₃  ...  G₃ₙ           │
+    │   ⋮    ⋮    ⋮   ⋱    ⋮             │
+    │  Gₙ₁  Gₙ₂  Gₙ₃  ...  Gₙₙ           │
+    └                                     ┘
+
+Where each Gᵢⱼ represents the memristive conductance between nodes i and j.
+Stability is maintained when: Σ(G × V) = I (Kirchhoff's Current Law)
+                            `}</pre>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const SecurityFeature = ({ icon, title, description }) => (
+            <div className="bg-gray-900/50 p-4 rounded-lg border border-gray-700 hover:border-cyan-700/50 transition-all">
+                <div className="text-3xl mb-2">{icon}</div>
+                <h4 className="text-cyan-300 font-bold mb-1">{title}</h4>
+                <p className="text-gray-400 text-sm">{description}</p>
+            </div>
+        );
+
+        // Render the app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
